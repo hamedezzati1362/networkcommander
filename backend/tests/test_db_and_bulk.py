@@ -174,3 +174,46 @@ def test_csv_import_and_scan_limits(api):
     r = api.post("/devices/import", {"csv": "name,host,vendor,port\nrt1,10.1.1.1,cisco,22\nbad,10.1.1.2,nokia,22\n"}).json()
     assert r["added"] == 1 and len(r["errors"]) == 1
     assert api.post("/discovery/scan", {"cidr": "10.0.0.0/8"}).status_code == 422
+
+
+def test_concurrent_first_start_does_not_crash(tmp_path):
+    """Regression: two launcher PROCESSES migrating a fresh DB at the same time (alembic_version already exists)."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    url = f"sqlite:///{(tmp_path / 'race.db').as_posix()}"
+    code = "import sys; sys.path.insert(0, '.'); from nc.db import migrate; migrate(sys.argv[1])"
+    root = Path(__file__).resolve().parent.parent
+    procs = [subprocess.Popen([sys.executable, "-c", code, url], cwd=root, stderr=subprocess.PIPE) for _ in range(6)]
+    results = [(p.wait(), p.stderr.read().decode()) for p in procs]
+    assert all(rc == 0 for rc, _ in results), results
+    assert sqlite3.connect(tmp_path / "race.db").execute("select version_num from alembic_version").fetchone()[0] == "0002"
+
+
+def test_launcher_lock_allows_only_one_instance(tmp_path):
+    from nc.proclock import try_lock as _lock
+    a = _lock(tmp_path / "nc.lock")
+    assert a is not None
+    assert _lock(tmp_path / "nc.lock") is None
+    a.close()
+    assert _lock(tmp_path / "nc.lock") is not None
+
+
+def test_migration_waits_for_another_process_holding_the_lock(tmp_path):
+    """Deterministic version of the race: while another process holds the migration lock, nothing is created."""
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path
+    from nc.proclock import try_lock
+    db = tmp_path / "w.db"
+    held = try_lock(str(db) + ".migrate.lock")
+    assert held is not None
+    code = "import sys; sys.path.insert(0, '.'); from nc.db import migrate; migrate(sys.argv[1])"
+    root = Path(__file__).resolve().parent.parent
+    p = subprocess.Popen([sys.executable, "-c", code, f"sqlite:///{db.as_posix()}"], cwd=root)
+    time.sleep(1.5)
+    assert p.poll() is None and not db.exists()  # still waiting, has not touched the database
+    held.close()
+    assert p.wait(timeout=30) == 0
+    assert sqlite3.connect(db).execute("select version_num from alembic_version").fetchone()[0] == "0002"

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import os
 import socket
 import sys
 import threading
@@ -15,6 +16,7 @@ import webbrowser
 import httpx
 
 from nc.config import load_settings
+from nc.proclock import try_lock as _lock
 
 
 def _running(host: str, port: int) -> bool:
@@ -23,6 +25,15 @@ def _running(host: str, port: int) -> bool:
             return True
     except OSError:
         return False
+
+
+def _wait_port(host: str, port: int, seconds: float) -> bool:
+    end = time.time() + seconds
+    while time.time() < end:
+        if _running(host, port):
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def _frontend_dir():
@@ -47,6 +58,11 @@ def main() -> int:
         return 0
     if _running(s.host, s.port):
         if "--no-browser" not in sys.argv and token_file.exists():
+            webbrowser.open(f"http://{s.host}:{s.port}/auth/bootstrap?token={token_file.read_text().strip()}")
+        return 0
+    lock = _lock(s.data_dir / "nc.lock")
+    if lock is None:  # another launcher is starting the service right now
+        if _wait_port(s.host, s.port, 45) and "--no-browser" not in sys.argv and token_file.exists():
             webbrowser.open(f"http://{s.host}:{s.port}/auth/bootstrap?token={token_file.read_text().strip()}")
         return 0
     import uvicorn

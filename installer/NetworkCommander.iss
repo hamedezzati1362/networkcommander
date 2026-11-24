@@ -2,7 +2,7 @@
 #ifndef SourceDir
   #define SourceDir "..\backend\dist\NetworkCommander"
 #endif
-#define AppVer "0.1.0"
+#define AppVer "0.1.1"
 [Setup]
 AppId={{6B2A7D1E-5C0B-4D3E-9A55-4E7B0C1D2F01}
 AppName=Network Commander
