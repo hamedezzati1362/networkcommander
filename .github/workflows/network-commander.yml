@@ -1,0 +1,95 @@
+name: Network Commander
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+# A tag like v0.1.0 builds the installer and publishes it as a GitHub pre-release (see the "release" job).
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: Backend tests
+        run: |
+          pip install -r backend/requirements-dev.txt
+          cd backend && python -m pytest -q
+      - name: Frontend tests and build
+        run: |
+          cd frontend && npm ci && npm test && npm run build
+
+  windows:
+    runs-on: windows-latest
+    needs: tests
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: Build package
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File installer/build-windows.ps1
+      - name: Smoke test the packaged app (start, health, stop)
+        shell: pwsh
+        run: |
+          $env:NC_DATA_DIR = "$env:RUNNER_TEMP\nc-smoke"; $env:NC_PORT = "8777"
+          $p = Start-Process backend\dist\NetworkCommander\NetworkCommander.exe -ArgumentList "--no-browser" -PassThru
+          $ok = $false
+          1..30 | ForEach-Object { try { $r = Invoke-RestMethod http://127.0.0.1:8777/api/v1/health; if ($r.status -eq "ok") { $ok = $true; $r | ConvertTo-Json; break } } catch { Start-Sleep 1 } }
+          if (-not $ok) { Get-Content "$env:NC_DATA_DIR\logs\*.log" -ErrorAction SilentlyContinue; throw "packaged app did not start" }
+          if ($r.secret_store -ne "windows-dpapi") { throw "DPAPI secret store not active: $($r.secret_store)" }
+          backend\dist\NetworkCommander\NetworkCommander.exe --stop
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DSourceDir="$PWD\backend\dist\NetworkCommander" installer\NetworkCommander.iss
+          Get-ChildItem out\NetworkCommander-Setup-*.exe
+      - name: SHA-256 of the installer
+        shell: pwsh
+        run: |
+          Get-ChildItem out\NetworkCommander-Setup-*.exe | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$h  $($_.Name)" | Out-File -Encoding ascii "$($_.FullName).sha256"
+            "$h  $($_.Name)"
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NetworkCommander-Setup
+          path: |
+            out/NetworkCommander-Setup-*.exe
+            out/NetworkCommander-Setup-*.exe.sha256
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    needs: windows
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: NetworkCommander-Setup
+          path: release-files
+      - name: Publish pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-files/*
+          prerelease: true
+          generate_release_notes: true
+          body: |
+            **Pre-release.** Tested only against simulated devices and CI; not yet tested on real Cisco / MikroTik / Fortinet equipment or verified on a real Windows machine by the owner.
+            Verify the installer with the attached `.sha256` file. See `docs/STATUS.md` for what is and is not implemented.

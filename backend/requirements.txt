@@ -1,0 +1,9 @@
+fastapi==0.165.0
+uvicorn==0.54.0
+pydantic==2.13.5
+SQLAlchemy==2.1.9
+alembic==1.20.1
+netmiko==4.8.0
+paramiko==5.1.0
+cryptography==50.0.1
+httpx==0.28.1
