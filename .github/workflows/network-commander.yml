@@ -5,6 +5,11 @@ on:
     branches: [main, "claude/**"]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional: publish a pre-release with this tag (e.g. v0.1.0) after a successful build"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -73,7 +78,7 @@ jobs:
             out/NetworkCommander-Setup-*.exe.sha256
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
     runs-on: ubuntu-24.04
     needs: windows
     timeout-minutes: 10
@@ -87,6 +92,8 @@ jobs:
       - name: Publish pre-release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
           files: release-files/*
           prerelease: true
           generate_release_notes: true
